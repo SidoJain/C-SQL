@@ -197,7 +197,7 @@ void create_new_root(DbTable* table, uint32_t right_child_page_idx);
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        printf("Must supply a database filename.\n");
+        printf(ANSI_COLOR_RED "Must supply a database filename.\n" ANSI_COLOR_RESET);
         exit(EXIT_FAILURE);
     }
 
