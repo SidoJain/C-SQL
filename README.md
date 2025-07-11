@@ -66,18 +66,18 @@ make run
   ```
 
 - `import '{file.csv}'`
- Imports content of csv file with name `file.csv`.
- **Example:**
- ```bash
- import 'example.csv'
- ```
+  Imports content of csv file with name `file.csv`.
+  **Example:**
+  ```bash
+  import 'example.csv'
+  ```
 
 - `export '{file.csv}'`
- Exports records to csv file with name `file.csv`.
- **Example:**
- ```bash
- export 'records.csv'
- ```
+  Exports records to csv file with name `file.csv`.
+  **Example:**
+  ```bash
+  export 'records.csv'
+  ```
 
 ### Meta-Commands
 
