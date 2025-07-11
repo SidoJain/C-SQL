@@ -3,12 +3,14 @@
 This project is a simple, from-scratch database implementation in C. It uses a B-Tree to store data, persists records to a file, and provides a basic SQL-like command-line interface (REPL). The primary purpose of this project is educational, demonstrating core database concepts like data structures, file I/O, serialization, and command parsing.
 
 ## Features
--   **CRUD Operations**: `insert`, `select` (all or by ID), and `drop` (by ID).
--   **B-Tree for Indexing**: Data is stored and indexed in a B-Tree, allowing for efficient range queries and lookups. The primary key is an integer `id`.
--   **File-Based Persistence**: The database is saved to a single file, which can be reloaded in subsequent sessions.
--   **In-Memory Page Cache**: A pager manages reading and writing fixed-size pages from the file into memory to reduce I/O overhead.
--   **Interactive REPL**: A simple Read-Eval-Print Loop for interacting with the database.
--   **Meta-Commands**: Special commands for inspecting the database state (e.g., printing the B-Tree structure).
+
+- **CRUD Operations**: `insert`, `select` (all or by ID), and `drop` (by ID). 
+- **B-Tree for Indexing**: Data is stored and indexed in a B-Tree, allowing for efficient range queries and lookups. The primary key is an integer `id`.
+- **File-Based Persistence**: The database is saved to a single file, which can be reloaded in subsequent sessions.
+- **File-Based Import/Export**: The database can be imported or exported using a csv file.
+- **In-Memory Page Cache**: A pager manages reading and writing fixed-size pages from the file into memory to reduce I/O overhead.
+- **Interactive REPL**: A simple Read-Eval-Print Loop for interacting with the database.
+- **Meta-Commands**: Special commands for inspecting the database state (e.g., printing the B-Tree structure).
 
 ## How to Build and Run
 
@@ -62,6 +64,20 @@ make run
   ```bash
   drop 1
   ```
+
+- `import '{file.csv}'`
+ Imports content of csv file with name `file.csv`.
+ **Example:**
+ ```bash
+ import 'example.csv'
+ ```
+
+- `export '{file.csv}'`
+ Exports records to csv file with name `file.csv`.
+ **Example:**
+ ```bash
+ export 'records.csv'
+ ```
 
 ### Meta-Commands
 
@@ -118,32 +134,6 @@ make run
 - `TableCursor` points to specific row in the table.
 - Simplifies traversal of the B-Tree.
 - Supports row access and iteration.
-
-## Code Structure
-
-All logic resides in `main.c`. Functions are grouped by purpose:
-
-- **Serialization**
-  - `serialize_user_row`, `deserialize_user_row`
-
-- **Node Manipulation**
-  - `get_node_type`, `set_node_type`
-  - `is_node_root`, `set_node_root`
-  - `leaf_node_*`, `internal_node_*`
-
-- **B-Tree Operations**
-  - `leaf_node_insert`, `leaf_node_split_and_insert`
-  - `internal_node_insert`, `internal_node_split_and_insert`
-  - `create_new_root`
-
-- **Pager & File I/O**
-  - `pager_open`, `get_page`, `pager_flush`, `db_close`
-
-- **Table & Cursor**
-  - `db_open`, `table_start`, `table_find`, `cursor_value`, `cursor_advance`
-
-- **Main Loop**
-  - `main`, `prepare_statement`, `execute_statement`
 
 ## Limitations and Future Work
 
