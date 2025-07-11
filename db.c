@@ -1086,35 +1086,28 @@ void merge_nodes(DbTable* table, uint32_t parent_page_idx, uint32_t node_page_id
     void* parent_node = get_page(table->db_pager, parent_page_idx);
     void* node = get_page(table->db_pager, node_page_idx);
     void* sibling_node = get_page(table->db_pager, sibling_page_idx);
-
-    // This function assumes node_page_idx is the left node and sibling_page_idx is the right.
-    // The logic in adjust_tree_after_delete ensures this is always the case.
     uint32_t sibling_child_index_in_parent = get_node_child_index(parent_node, sibling_page_idx);
 
     if (get_node_type(node) == NODE_LEAF) {
         uint32_t node_num_cells = *leaf_node_num_cells(node);
         uint32_t sibling_num_cells = *leaf_node_num_cells(sibling_node);
 
-        // Copy all cells from the right node (sibling) to the end of the left node.
         memcpy(leaf_node_cell(node, node_num_cells), leaf_node_cell(sibling_node, 0), sibling_num_cells * LEAF_NODE_CELL_SIZE);
         *leaf_node_num_cells(node) += sibling_num_cells;
 
-        // Update the next leaf pointer to skip over the now-empty sibling node.
         *leaf_node_next_leaf(node) = *leaf_node_next_leaf(sibling_node);
-    } else { // Internal Node Merge
+    }
+    else {
         uint32_t node_num_keys = *internal_node_num_keys(node);
         uint32_t sibling_num_keys = *internal_node_num_keys(sibling_node);
 
-        // Pull down the separating key from the parent.
         uint32_t key_from_parent = *internal_node_key(parent_node, sibling_child_index_in_parent - 1);
         *internal_node_key(node, node_num_keys) = key_from_parent;
         
-        // Copy keys and child pointers from the sibling.
         memcpy(internal_node_cell(node, node_num_keys + 1), internal_node_cell(sibling_node, 0), sibling_num_keys * INTERNAL_NODE_CELL_SIZE);
         *internal_node_right_child(node) = *internal_node_right_child(sibling_node);
         *internal_node_num_keys(node) += sibling_num_keys + 1;
 
-        // Update the parent pointer for all children that were moved from the sibling node.
         uint32_t total_keys = *internal_node_num_keys(node);
         for(uint32_t i = node_num_keys + 1; i < total_keys + 1; i++) {
             uint32_t child_page_idx = *internal_node_child(node, i);
@@ -1123,32 +1116,22 @@ void merge_nodes(DbTable* table, uint32_t parent_page_idx, uint32_t node_page_id
         }
     }
 
-    // Remove the key and child pointer from the parent node.
     uint32_t num_parent_keys = *internal_node_num_keys(parent_node);
-    // The key to remove is at index (sibling_child_index_in_parent - 1).
-    // The child pointer to remove is part of the cell at that index, or the right_child pointer.
-    for (uint32_t i = sibling_child_index_in_parent - 1; i < num_parent_keys - 1; i++) {
-        // Shift cells (key and left-child-pointer) to the left
+    for (uint32_t i = sibling_child_index_in_parent - 1; i < num_parent_keys - 1; i++)
         memcpy(internal_node_cell(parent_node, i), internal_node_cell(parent_node, i + 1), INTERNAL_NODE_CELL_SIZE);
-    }
-    // If the rightmost child was the one removed, we need to update the right child pointer.
-    // The loop above already shifted the former right_child into the last cell, so we can take it from there.
-    if (sibling_child_index_in_parent == num_parent_keys) {
-         *internal_node_right_child(parent_node) = *internal_node_child(parent_node, num_parent_keys - 1);
-    }
+
+    if (sibling_child_index_in_parent == num_parent_keys)
+        *internal_node_right_child(parent_node) = *internal_node_child(parent_node, num_parent_keys - 1);
     *internal_node_num_keys(parent_node) -= 1;
     
-    // The max key of the merged node's parent may have changed. Update it.
     uint32_t parent_of_parent_idx = *node_parent(parent_node);
-    if (parent_of_parent_idx != 0) { // 0 is an invalid parent page index
+    if (parent_of_parent_idx != 0) {
         void* parent_of_parent = get_page(table->db_pager, parent_of_parent_idx);
         uint32_t old_max = *internal_node_key(parent_of_parent, get_node_child_index(parent_of_parent, parent_page_idx));
         uint32_t new_max = get_node_max_key(table->db_pager, parent_node);
         update_internal_node_key(parent_of_parent, old_max, new_max);
     }
 
-
-    // Recursively adjust the tree upwards if the parent is now underfull.
     adjust_tree_after_delete(table, parent_page_idx);
 }
 
@@ -1222,15 +1205,12 @@ void handle_root_shrink(DbTable* table) {
     uint32_t root_page_idx = table->root_page_idx;
     void* root_node = get_page(table->db_pager, root_page_idx);
 
-    // If the root is an internal node with no keys, it means it has only one child.
-    // That child becomes the new root.
     if (get_node_type(root_node) == NODE_INTERNAL && *internal_node_num_keys(root_node) == 0) {
-        // The single remaining child is in the first child pointer slot.
         uint32_t new_root_page_idx = *internal_node_child(root_node, 0);
         void* new_root_node = get_page(table->db_pager, new_root_page_idx);
 
         table->root_page_idx = new_root_page_idx;
         set_node_root(new_root_node, true);
-        *node_parent(new_root_node) = 0; // The new root has no parent.
+        *node_parent(new_root_node) = 0;
     }
 }
