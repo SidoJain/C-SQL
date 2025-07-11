@@ -10,7 +10,8 @@
 #define size_of_attribute(Struct, Attribute) (sizeof(((Struct*)0)->Attribute))
 
 #define USERNAME_MAX_LENGTH     32
-#define COLUMN_EMAIL_LENGTH     255
+#define EMIL_MAX_LENGTH         255
+#define FILENAME_MAX_LENGTH     255
 
 #define ID_FIELD_SIZE           size_of_attribute(UserRow, id)
 #define USERNAME_FIELD_SIZE     size_of_attribute(UserRow, username)
@@ -21,9 +22,7 @@
 #define USER_ROW_SIZE           (ID_FIELD_SIZE + USERNAME_FIELD_SIZE + EMAIL_FIELD_SIZE)
 
 #define PAGE_SIZE_BYTES         4096
-#define USER_ROWS_PER_PAGE      (PAGE_SIZE_BYTES / USER_ROW_SIZE)
 #define MAX_PAGES               100
-#define MAX_USER_ROWS           (USER_ROWS_PER_PAGE * MAX_PAGES)
 #define INVALID_PAGE_IDX        UINT32_MAX
 
 #define NODE_TYPE_SIZE              sizeof(uint8_t)
@@ -37,7 +36,6 @@
 #define LEAF_NODE_KEY_SIZE          sizeof(uint32_t)
 #define LEAF_NODE_KEY_OFFSET        0
 #define LEAF_NODE_VALUE_SIZE        USER_ROW_SIZE
-#define LEAF_NODE_VALUE_OFFSET      (LEAF_NODE_KEY_OFFSET + LEAF_NODE_KEY_SIZE)
 #define LEAF_NODE_CELL_SIZE         (LEAF_NODE_KEY_SIZE + LEAF_NODE_VALUE_SIZE)
 #define LEAF_NODE_NUM_CELLS_SIZE    sizeof(uint32_t)
 #define LEAF_NODE_NUM_CELLS_OFFSET  COMMON_NODE_HEADER_SIZE
@@ -49,7 +47,6 @@
 #define LEAF_NODE_RIGHT_SPLIT_COUNT ((LEAF_NODE_MAX_CELLS + 1) / 2)
 #define LEAF_NODE_LEFT_SPLIT_COUNT  ((LEAF_NODE_MAX_CELLS + 1) - LEAF_NODE_RIGHT_SPLIT_COUNT)
 #define LEAF_NODE_MIN_CELLS         (LEAF_NODE_LEFT_SPLIT_COUNT - 1)
-#define INTERNAL_NODE_MIN_KEYS      (INTERNAL_NODE_MAX_KEYS / 2)
 
 #define INTERNAL_NODE_NUM_KEYS_SIZE         sizeof(uint32_t)
 #define INTERNAL_NODE_NUM_KEYS_OFFSET       COMMON_NODE_HEADER_SIZE
@@ -60,6 +57,7 @@
 #define INTERNAL_NODE_CHILD_SIZE            sizeof(uint32_t)
 #define INTERNAL_NODE_CELL_SIZE             (INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE)
 #define INTERNAL_NODE_MAX_KEYS              ((PAGE_SIZE_BYTES - INTERNAL_NODE_HEADER_SIZE) / INTERNAL_NODE_CELL_SIZE)
+#define INTERNAL_NODE_MIN_KEYS      (INTERNAL_NODE_MAX_KEYS / 2)
 
 #define ANSI_COLOR_GREEN    "\x1b[32m"
 #define ANSI_COLOR_YELLOW   "\x1b[33m"
@@ -69,6 +67,7 @@
 typedef enum {
     EXECUTE_SUCCESS,
     EXECUTE_DUPLICATE_KEY,
+    EXECUTE_FAILURE
 } ExecuteResult;
 
 typedef enum {
@@ -88,7 +87,9 @@ typedef enum {
     STATEMENT_INSERT,
     STATEMENT_SELECT,
     STATEMENT_SPECIFIC_SELECT,
-    STATEMENT_DROP
+    STATEMENT_DROP,
+    STATEMENT_IMPORT,
+    STATEMENT_EXPORT
 } StatementType;
 
 typedef enum {
@@ -105,12 +106,15 @@ typedef struct {
 typedef struct {
     uint32_t id;
     char username[USERNAME_MAX_LENGTH + 1];
-    char email[COLUMN_EMAIL_LENGTH + 1];
+    char email[EMIL_MAX_LENGTH   +  1];
 } UserRow;
 
 typedef struct {
     StatementType type;
-    UserRow user_to_insert;
+    union {
+        UserRow user_to_insert;
+        char filename[FILENAME_MAX_LENGTH + 1];
+    } payload;
 } Statement;
 
 typedef struct {
@@ -191,12 +195,16 @@ void print_tree(DbPager* db_pager, uint32_t page_idx, uint32_t indentation_level
 PrepareResult prepare_statement(InputBuffer* input_buffer, Statement* statement);
 PrepareResult prepare_insert(InputBuffer* input_buffer, Statement* statement);
 PrepareResult prepare_drop(InputBuffer* input_buffer, Statement* statement);
+PrepareResult prepare_import(InputBuffer* input_buffer, Statement* statement);
+PrepareResult prepare_export(InputBuffer* input_buffer, Statement* statement);
 ExecuteResult execute_statement(Statement* statement, DbTable* table);
 ExecuteResult execute_insert(Statement* statement, DbTable* table);
 ExecuteResult execute_select(Statement* statement, DbTable* table);
 ExecuteResult execute_drop(Statement* statement, DbTable* table);
-void create_new_root(DbTable* table, uint32_t right_child_page_idx);
+ExecuteResult execute_import(Statement* statement, DbTable* table);
+ExecuteResult execute_export(Statement* statement, DbTable* table);
 
+void create_new_root(DbTable* table, uint32_t right_child_page_idx);
 void leaf_node_remove_cell(void* node, uint32_t cell_idx);
 uint32_t get_node_child_index(void* parent_node, uint32_t child_page_idx);
 void merge_nodes(DbTable* table, uint32_t parent_page_idx, uint32_t node_page_idx, uint32_t sibling_page_idx);
@@ -241,7 +249,7 @@ int main(int argc, char* argv[]) {
                 printf(ANSI_COLOR_RED "String is too long.\n" ANSI_COLOR_RESET);
                 continue;
             case PREPARE_SYNTAX_ERROR:
-                printf(ANSI_COLOR_RED "Syntax error. Could not parse statement.\n" ANSI_COLOR_RESET);
+                printf(ANSI_COLOR_RED "Syntax Error. Could not parse statement.\n" ANSI_COLOR_RESET);
                 continue;
             case PREPARE_UNRECOGNIZED_STATEMENT:
                 printf(ANSI_COLOR_RED "Unrecognized keyword at start of '%s'.\n" ANSI_COLOR_RESET, input_buffer->buffer);
@@ -254,6 +262,9 @@ int main(int argc, char* argv[]) {
                 break;
             case EXECUTE_DUPLICATE_KEY:
                 printf(ANSI_COLOR_RED "Error: Duplicate key.\n" ANSI_COLOR_RESET);
+                break;
+            case EXECUTE_FAILURE:
+                printf(ANSI_COLOR_RED "Fatal Error\n" ANSI_COLOR_RESET);
                 break;
         }
     }
@@ -496,7 +507,7 @@ void internal_node_split_and_insert(DbTable* table, uint32_t parent_page_idx, ui
         (*old_num_keys)--;
     }
 
-    *internal_node_right_child(old_node) = *internal_node_child(old_node, --(*old_num_keys));
+    *internal_node_right_child(old_node) = *internal_node_child(old_node, (*old_num_keys)--);
     uint32_t max_after_split = get_node_max_key(table->db_pager, old_node);
     uint32_t destination_page_num = child_max_key < max_after_split ? old_page_idx : new_page_idx;
 
@@ -788,22 +799,22 @@ void print_prompt() {
 }
 
 MetaCommandResult do_meta_command(InputBuffer* input_buffer, DbTable* table) {
-    if (strcmp(input_buffer->buffer, ".exit") == 0) {
+    if (strncmp(input_buffer->buffer, ".exit", 5) == 0) {
         close_input_buffer(input_buffer);
         db_close(table);
         exit(EXIT_SUCCESS);
     }
-    else if (strcmp(input_buffer->buffer, ".btree") == 0) {
+    else if (strncmp(input_buffer->buffer, ".btree", 6) == 0) {
         printf("Tree:\n");
         print_tree(table->db_pager, 0, 0);
         return META_COMMAND_SUCCESS;
     }
-    else if (strcmp(input_buffer->buffer, ".constants") == 0) {
+    else if (strncmp(input_buffer->buffer, ".constants", 10) == 0) {
         printf("Constants:\n");
         print_constants();
         return META_COMMAND_SUCCESS;
     }
-    else if (strcmp(input_buffer->buffer, ".commands") == 0) {
+    else if (strncmp(input_buffer->buffer, ".commands", 9) == 0) {
         printf("Commands:\n");
         print_commands();
         return META_COMMAND_SUCCESS;
@@ -826,6 +837,8 @@ void print_commands() {
     printf("insert {num} {name} {email}\n");
     printf("select\n");
     printf("drop {id}\n");
+    printf("import '{file.csv}'\n");
+    printf("export '{file.csv}'\n");
     printf(".btree\n");
     printf(".commands\n");
     printf(".constants\n");
@@ -883,7 +896,7 @@ PrepareResult prepare_statement(InputBuffer* input_buffer, Statement* statement)
             if (id < 0)
                 return PREPARE_NEGATIVE_ID;
             statement->type = STATEMENT_SPECIFIC_SELECT;
-            statement->user_to_insert.id = id;
+            statement->payload.user_to_insert.id = id;
 
             char extra[2];
             if (sscanf(input_buffer->buffer, "select %d %1s", &id, extra) == 2)
@@ -904,6 +917,12 @@ PrepareResult prepare_statement(InputBuffer* input_buffer, Statement* statement)
     if (strncmp(input_buffer->buffer, "drop", 4) == 0)
         return prepare_drop(input_buffer, statement);
 
+    if (strncmp(input_buffer->buffer, "import", 6) == 0)
+        return prepare_import(input_buffer, statement);
+
+    if (strncmp(input_buffer->buffer, "export", 6) == 0)
+        return prepare_export(input_buffer, statement);
+
     return PREPARE_UNRECOGNIZED_STATEMENT;
 }
 
@@ -911,7 +930,7 @@ PrepareResult prepare_insert(InputBuffer* input_buffer, Statement* statement) {
     statement->type = STATEMENT_INSERT;
 
     char username[USERNAME_MAX_LENGTH + 2];
-    char email[COLUMN_EMAIL_LENGTH + 2];
+    char email[EMIL_MAX_LENGTH   +  2];
     int id;
 
     int chars_consumed = 0;
@@ -923,12 +942,12 @@ PrepareResult prepare_insert(InputBuffer* input_buffer, Statement* statement) {
         return PREPARE_NEGATIVE_ID;
     if (strlen(username) > USERNAME_MAX_LENGTH)
         return PREPARE_STRING_TOO_LONG;
-    if (strlen(email) > COLUMN_EMAIL_LENGTH)
-        return PREPARE_STRING_TOO_LONG;
+    if (strlen(email) > EMIL_MAX_LENGTH )
+            return PREPARE_STRING_TOO_LONG;
 
-    statement->user_to_insert.id = id;
-    strcpy(statement->user_to_insert.username, username);
-    strcpy(statement->user_to_insert.email, email);
+    statement->payload.user_to_insert.id = id;
+    strcpy(statement->payload.user_to_insert.username, username);
+    strcpy(statement->payload.user_to_insert.email, email);
     return PREPARE_SUCCESS;
 }
 
@@ -941,7 +960,45 @@ PrepareResult prepare_drop(InputBuffer* input_buffer, Statement* statement) {
     if (id < 0)
         return PREPARE_NEGATIVE_ID;
 
-    statement->user_to_insert.id = id;
+    statement->payload.user_to_insert.id = id;
+    return PREPARE_SUCCESS;
+}
+
+PrepareResult prepare_import(InputBuffer* input_buffer, Statement* statement) {
+    statement->type = STATEMENT_IMPORT;
+    char filename[FILENAME_MAX_LENGTH + 2];
+    int args_assigned = sscanf(input_buffer->buffer, "import '%255[^']'", filename);
+
+    if (args_assigned != 1) {
+        args_assigned = sscanf(input_buffer->buffer, "import %s", filename);
+        if (args_assigned == 1)
+            printf(ANSI_COLOR_RED "Syntax Error: Filename must be enclosed in single quotes (e.g., import 'file.csv').\n" ANSI_COLOR_RESET);
+        return PREPARE_SYNTAX_ERROR;
+    }
+
+    if (strlen(filename) > FILENAME_MAX_LENGTH)
+        return PREPARE_STRING_TOO_LONG;
+
+    strcpy(statement->payload.filename, filename);
+    return PREPARE_SUCCESS;
+}
+
+PrepareResult prepare_export(InputBuffer* input_buffer, Statement* statement) {
+    statement->type = STATEMENT_EXPORT;
+    char filename[FILENAME_MAX_LENGTH + 2];
+    int args_assigned = sscanf(input_buffer->buffer, "export '%255[^']'", filename);
+    
+    if (args_assigned != 1) {
+        args_assigned = sscanf(input_buffer->buffer, "export %s", filename);
+        if (args_assigned == 1)
+            printf(ANSI_COLOR_RED "Syntax Error: Filename must be enclosed in single quotes (e.g., export 'file.csv').\n" ANSI_COLOR_RESET);
+        return PREPARE_SYNTAX_ERROR;
+    }
+
+    if (strlen(filename) > FILENAME_MAX_LENGTH)
+        return PREPARE_STRING_TOO_LONG;
+
+    strcpy(statement->payload.filename, filename);
     return PREPARE_SUCCESS;
 }
 
@@ -954,11 +1011,15 @@ ExecuteResult execute_statement(Statement* statement, DbTable* table) {
             return execute_select(statement, table);
         case (STATEMENT_DROP):
             return execute_drop(statement, table);
+        case (STATEMENT_IMPORT):
+            return execute_import(statement, table);
+        case (STATEMENT_EXPORT):
+            return execute_export(statement, table);
     }
 }
 
 ExecuteResult execute_insert(Statement* statement, DbTable* table) {
-    UserRow* user_to_insert = &(statement->user_to_insert);
+    UserRow* user_to_insert = &(statement->payload.user_to_insert);
     uint32_t key_to_insert = user_to_insert->id;
     TableCursor* cursor = table_find(table, key_to_insert);
 
@@ -978,7 +1039,7 @@ ExecuteResult execute_insert(Statement* statement, DbTable* table) {
 ExecuteResult execute_select(Statement* statement, DbTable* table) {
     UserRow user;
     if (statement->type == STATEMENT_SPECIFIC_SELECT) {
-        uint32_t key_to_find = statement->user_to_insert.id;
+        uint32_t key_to_find = statement->payload.user_to_insert.id;
         TableCursor* cursor = table_find(table, key_to_find);
         void* node = get_page(table->db_pager, cursor->page_idx);
         uint32_t num_cells = *leaf_node_num_cells(node);
@@ -988,6 +1049,7 @@ ExecuteResult execute_select(Statement* statement, DbTable* table) {
             if (key_at_index == key_to_find) {
                 deserialize_user_row(cursor_value(cursor), &user);
                 print_user_row(&user);
+                printf(ANSI_COLOR_YELLOW "(Fetched 1 row)\n" ANSI_COLOR_RESET);
             }
             else
                 printf(ANSI_COLOR_RED "Error: Record with ID %u not found.\n" ANSI_COLOR_RESET, key_to_find);
@@ -1000,19 +1062,22 @@ ExecuteResult execute_select(Statement* statement, DbTable* table) {
     }
     else {
         TableCursor* cursor = table_start(table);
+        uint32_t row_count = 0;
         while (!(cursor->end_of_table)) {
             deserialize_user_row(cursor_value(cursor), &user);
             print_user_row(&user);
             cursor_advance(cursor);
+            row_count++;
         }
-    
+
+        printf(ANSI_COLOR_YELLOW "(Fetched %u rows)\n" ANSI_COLOR_RESET, row_count);
         free(cursor);
     }
     return EXECUTE_SUCCESS;
 }
 
 ExecuteResult execute_drop(Statement* statement, DbTable* table) {
-    uint32_t key_to_delete = statement->user_to_insert.id;
+    uint32_t key_to_delete = statement->payload.user_to_insert.id;
     TableCursor* cursor = table_find(table, key_to_delete);
     void* node = get_page(table->db_pager, cursor->page_idx);
 
@@ -1027,6 +1092,92 @@ ExecuteResult execute_drop(Statement* statement, DbTable* table) {
     adjust_tree_after_delete(table, page_idx_to_adjust);
 
     free(cursor);
+    return EXECUTE_SUCCESS;
+}
+
+ExecuteResult execute_import(Statement* statement, DbTable* table) {
+    char* filename = statement->payload.filename;
+    FILE* file = fopen(filename, "r");
+    if (!file) {
+        perror(ANSI_COLOR_RED "Error opening file" ANSI_COLOR_RESET);
+        return EXECUTE_FAILURE;
+    }
+
+    char line_buffer[512];
+    int line_num = 0;
+    int success_count = 0;
+    int fail_count = 0;
+
+    printf("Importing data from '%s'...\n", filename);
+
+    while (fgets(line_buffer, sizeof(line_buffer), file)) {
+        line_num++;
+        line_buffer[strcspn(line_buffer, "\r\n")] = 0;
+
+        Statement insert_statement;
+        insert_statement.type = STATEMENT_INSERT;
+
+        char username[USERNAME_MAX_LENGTH + 2];
+        char email[EMIL_MAX_LENGTH   +  2];
+        int id;
+
+        int args_assigned = sscanf(line_buffer, "%d,%32[^,],%255s", &id, username, email);
+
+        if (args_assigned != 3) {
+            fprintf(stderr, ANSI_COLOR_RED "Error parsing line %d: Malformed CSV\n" ANSI_COLOR_RESET, line_num);
+            fail_count++;
+            continue;
+        }
+
+        if (id < 0 || strlen(username) > USERNAME_MAX_LENGTH || strlen(email) > EMIL_MAX_LENGTH )   {
+            fprintf(stderr, ANSI_COLOR_RED "Error on line %d: Invalid data.\n" ANSI_COLOR_RESET, line_num);
+            fail_count++;
+            continue;
+        }
+
+        insert_statement.payload.user_to_insert.id = id;
+        strcpy(insert_statement.payload.user_to_insert.username, username);
+        strcpy(insert_statement.payload.user_to_insert.email, email);
+
+        if (execute_insert(&insert_statement, table) == EXECUTE_SUCCESS) {
+            success_count++;
+        } else {
+            fprintf(stderr, ANSI_COLOR_YELLOW "Skipping line %d: Could not insert row with ID %d (likely a duplicate key).\n" ANSI_COLOR_RESET, line_num, id);
+            fail_count++;
+        }
+    }
+
+    fclose(file);
+    printf(ANSI_COLOR_GREEN "Import complete.\n" ANSI_COLOR_RESET);
+    printf(ANSI_COLOR_YELLOW "Successfully inserted: %d rows.\n" ANSI_COLOR_RESET, success_count);
+    printf(ANSI_COLOR_YELLOW "Failed or skipped: %d rows.\n" ANSI_COLOR_RESET, fail_count);
+
+    return EXECUTE_SUCCESS;
+}
+
+ExecuteResult execute_export(Statement* statement, DbTable* table) {
+    const char* filename = statement->payload.filename;
+    FILE* file = fopen(filename, "w");
+    if (!file) {
+        perror(ANSI_COLOR_RED "Error opening file for writing" ANSI_COLOR_RESET);
+        return EXECUTE_SUCCESS;
+    }
+
+    TableCursor* cursor = table_start(table);
+    uint32_t row_count = 0;
+    UserRow user;
+
+    while (!(cursor->end_of_table)) {
+        deserialize_user_row(cursor_value(cursor), &user);
+        fprintf(file, "%u,%s,%s\n", user.id, user.username, user.email);
+        cursor_advance(cursor);
+        row_count++;
+    }
+    
+    free(cursor);
+    fclose(file);
+
+    printf(ANSI_COLOR_YELLOW "Exported %u rows to '%s'.\n" ANSI_COLOR_RESET, row_count, filename);
     return EXECUTE_SUCCESS;
 }
 
