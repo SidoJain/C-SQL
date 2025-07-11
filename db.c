@@ -67,7 +67,7 @@
 typedef enum {
     EXECUTE_SUCCESS,
     EXECUTE_DUPLICATE_KEY,
-    EXECUTE_FAILURE
+    EXECUTE_SILENT_ERROR
 } ExecuteResult;
 
 typedef enum {
@@ -273,8 +273,7 @@ int main(int argc, char* argv[]) {
             case EXECUTE_DUPLICATE_KEY:
                 printf(ANSI_COLOR_RED "Error: Duplicate key.\n" ANSI_COLOR_RESET);
                 break;
-            case EXECUTE_FAILURE:
-                printf(ANSI_COLOR_RED "Fatal Error\n" ANSI_COLOR_RESET);
+            case EXECUTE_SILENT_ERROR:
                 break;
         }
     }
@@ -847,7 +846,7 @@ void print_commands() {
     printf("insert {num} {name} {email}\n");
     printf("select\n");
     printf("drop {id}\n");
-    printf("update {id} set {param}={updated_value}\n");
+    printf("update {id} set {param}={value}\n");
     printf("import '{file.csv}'\n");
     printf("export '{file.csv}'\n");
     printf(".btree\n");
@@ -1147,7 +1146,7 @@ ExecuteResult execute_import(Statement* statement, DbTable* table) {
     FILE* file = fopen(filename, "r");
     if (!file) {
         perror(ANSI_COLOR_RED "Error opening file" ANSI_COLOR_RESET);
-        return EXECUTE_FAILURE;
+        return EXECUTE_SILENT_ERROR;
     }
 
     char line_buffer[512];
@@ -1235,7 +1234,7 @@ ExecuteResult execute_update(Statement* statement, DbTable* table) {
     if (cursor->cell_idx >= *leaf_node_num_cells(node) || *leaf_node_key(node, cursor->cell_idx) != id_to_update) {
         printf(ANSI_COLOR_RED "Error: Record with ID %u not found.\n" ANSI_COLOR_RESET, id_to_update);
         free(cursor);
-        return EXECUTE_FAILURE;
+        return EXECUTE_SILENT_ERROR;
     }
 
     void* row_location = cursor_value(cursor);
