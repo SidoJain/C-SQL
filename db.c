@@ -10,7 +10,7 @@
 #define size_of_attribute(Struct, Attribute) (sizeof(((Struct*)0)->Attribute))
 
 #define USERNAME_MAX_LENGTH     32
-#define EMIL_MAX_LENGTH         255
+#define EMAIL_MAX_LENGTH         255
 #define FILENAME_MAX_LENGTH     255
 
 #define ID_FIELD_SIZE           size_of_attribute(UserRow, id)
@@ -89,7 +89,8 @@ typedef enum {
     STATEMENT_SPECIFIC_SELECT,
     STATEMENT_DROP,
     STATEMENT_IMPORT,
-    STATEMENT_EXPORT
+    STATEMENT_EXPORT,
+    STATEMENT_UPDATE
 } StatementType;
 
 typedef enum {
@@ -106,14 +107,21 @@ typedef struct {
 typedef struct {
     uint32_t id;
     char username[USERNAME_MAX_LENGTH + 1];
-    char email[EMIL_MAX_LENGTH   +  1];
+    char email[EMAIL_MAX_LENGTH + 1];
 } UserRow;
+
+typedef struct {
+    uint32_t id;
+    char field_to_update[USERNAME_MAX_LENGTH];
+    char new_value[EMAIL_MAX_LENGTH + 1];
+} UpdatePayload;
 
 typedef struct {
     StatementType type;
     union {
         UserRow user_to_insert;
         char filename[FILENAME_MAX_LENGTH + 1];
+        UpdatePayload update_payload;
     } payload;
 } Statement;
 
@@ -197,12 +205,14 @@ PrepareResult prepare_insert(InputBuffer* input_buffer, Statement* statement);
 PrepareResult prepare_drop(InputBuffer* input_buffer, Statement* statement);
 PrepareResult prepare_import(InputBuffer* input_buffer, Statement* statement);
 PrepareResult prepare_export(InputBuffer* input_buffer, Statement* statement);
+PrepareResult prepare_update(InputBuffer* input_buffer, Statement* statement);
 ExecuteResult execute_statement(Statement* statement, DbTable* table);
 ExecuteResult execute_insert(Statement* statement, DbTable* table);
 ExecuteResult execute_select(Statement* statement, DbTable* table);
 ExecuteResult execute_drop(Statement* statement, DbTable* table);
 ExecuteResult execute_import(Statement* statement, DbTable* table);
 ExecuteResult execute_export(Statement* statement, DbTable* table);
+ExecuteResult execute_update(Statement* statement, DbTable* table);
 
 void create_new_root(DbTable* table, uint32_t right_child_page_idx);
 void leaf_node_remove_cell(void* node, uint32_t cell_idx);
@@ -837,6 +847,7 @@ void print_commands() {
     printf("insert {num} {name} {email}\n");
     printf("select\n");
     printf("drop {id}\n");
+    printf("update {id} set {param}={updated_value}\n");
     printf("import '{file.csv}'\n");
     printf("export '{file.csv}'\n");
     printf(".btree\n");
@@ -917,6 +928,9 @@ PrepareResult prepare_statement(InputBuffer* input_buffer, Statement* statement)
     if (strncmp(input_buffer->buffer, "drop", 4) == 0)
         return prepare_drop(input_buffer, statement);
 
+    if (strncmp(input_buffer->buffer, "update", 6) == 0)
+        return prepare_update(input_buffer, statement);
+
     if (strncmp(input_buffer->buffer, "import", 6) == 0)
         return prepare_import(input_buffer, statement);
 
@@ -930,7 +944,7 @@ PrepareResult prepare_insert(InputBuffer* input_buffer, Statement* statement) {
     statement->type = STATEMENT_INSERT;
 
     char username[USERNAME_MAX_LENGTH + 2];
-    char email[EMIL_MAX_LENGTH   +  2];
+    char email[EMAIL_MAX_LENGTH + 2];
     int id;
 
     int chars_consumed = 0;
@@ -942,7 +956,7 @@ PrepareResult prepare_insert(InputBuffer* input_buffer, Statement* statement) {
         return PREPARE_NEGATIVE_ID;
     if (strlen(username) > USERNAME_MAX_LENGTH)
         return PREPARE_STRING_TOO_LONG;
-    if (strlen(email) > EMIL_MAX_LENGTH )
+    if (strlen(email) > EMAIL_MAX_LENGTH )
             return PREPARE_STRING_TOO_LONG;
 
     statement->payload.user_to_insert.id = id;
@@ -1002,6 +1016,37 @@ PrepareResult prepare_export(InputBuffer* input_buffer, Statement* statement) {
     return PREPARE_SUCCESS;
 }
 
+PrepareResult prepare_update(InputBuffer* input_buffer, Statement* statement) {
+    statement->type = STATEMENT_UPDATE;
+
+    int id;
+    char field[USERNAME_MAX_LENGTH + 2];
+    char value[EMAIL_MAX_LENGTH + 2];
+    int args_assigned = sscanf(input_buffer->buffer, "update %d set %32[a-zA-Z]=%256[^ \n]", &id, field, value);
+
+    if (args_assigned != 3)
+        return PREPARE_SYNTAX_ERROR;
+    if (id < 0)
+        return PREPARE_NEGATIVE_ID;
+
+    if (strcmp(field, "username") != 0 && strcmp(field, "email") != 0) {
+        printf(ANSI_COLOR_RED "Unrecognized field '%s' for update.\n" ANSI_COLOR_RESET, field);
+        printf(ANSI_COLOR_RED "Only fields 'username' & 'email' can be updated\n" ANSI_COLOR_RESET);
+        return PREPARE_SYNTAX_ERROR;
+    }
+
+    if (strcmp(field, "username") == 0 && strlen(value) > USERNAME_MAX_LENGTH)
+        return PREPARE_STRING_TOO_LONG;
+    if (strcmp(field, "email") == 0 && strlen(value) > EMAIL_MAX_LENGTH)
+        return PREPARE_STRING_TOO_LONG;
+
+    statement->payload.update_payload.id = id;
+    strcpy(statement->payload.update_payload.field_to_update, field);
+    strcpy(statement->payload.update_payload.new_value, value);
+
+    return PREPARE_SUCCESS;
+}
+
 ExecuteResult execute_statement(Statement* statement, DbTable* table) {
     switch (statement->type) {
         case (STATEMENT_INSERT):
@@ -1011,6 +1056,8 @@ ExecuteResult execute_statement(Statement* statement, DbTable* table) {
             return execute_select(statement, table);
         case (STATEMENT_DROP):
             return execute_drop(statement, table);
+        case (STATEMENT_UPDATE):
+            return execute_update(statement, table);
         case (STATEMENT_IMPORT):
             return execute_import(statement, table);
         case (STATEMENT_EXPORT):
@@ -1118,7 +1165,7 @@ ExecuteResult execute_import(Statement* statement, DbTable* table) {
         insert_statement.type = STATEMENT_INSERT;
 
         char username[USERNAME_MAX_LENGTH + 2];
-        char email[EMIL_MAX_LENGTH   +  2];
+        char email[EMAIL_MAX_LENGTH + 2];
         int id;
 
         int args_assigned = sscanf(line_buffer, "%d,%32[^,],%255s", &id, username, email);
@@ -1129,7 +1176,7 @@ ExecuteResult execute_import(Statement* statement, DbTable* table) {
             continue;
         }
 
-        if (id < 0 || strlen(username) > USERNAME_MAX_LENGTH || strlen(email) > EMIL_MAX_LENGTH )   {
+        if (id < 0 || strlen(username) > USERNAME_MAX_LENGTH || strlen(email) > EMAIL_MAX_LENGTH )   {
             fprintf(stderr, ANSI_COLOR_RED "Error on line %d: Invalid data.\n" ANSI_COLOR_RESET, line_num);
             fail_count++;
             continue;
@@ -1178,6 +1225,33 @@ ExecuteResult execute_export(Statement* statement, DbTable* table) {
     fclose(file);
 
     printf(ANSI_COLOR_YELLOW "Exported %u rows to '%s'.\n" ANSI_COLOR_RESET, row_count, filename);
+    return EXECUTE_SUCCESS;
+}
+
+ExecuteResult execute_update(Statement* statement, DbTable* table) {
+    uint32_t id_to_update = statement->payload.update_payload.id;
+    TableCursor* cursor = table_find(table, id_to_update);
+    void* node = get_page(table->db_pager, cursor->page_idx);
+    if (cursor->cell_idx >= *leaf_node_num_cells(node) || *leaf_node_key(node, cursor->cell_idx) != id_to_update) {
+        printf(ANSI_COLOR_RED "Error: Record with ID %u not found.\n" ANSI_COLOR_RESET, id_to_update);
+        free(cursor);
+        return EXECUTE_FAILURE;
+    }
+
+    void* row_location = cursor_value(cursor);
+    UserRow existing_row;
+    deserialize_user_row(row_location, &existing_row);
+
+    char* field = statement->payload.update_payload.field_to_update;
+    char* value = statement->payload.update_payload.new_value;
+
+    if (strcmp(field, "username") == 0)
+        strcpy(existing_row.username, value);
+    else if (strcmp(field, "email") == 0)
+        strcpy(existing_row.email, value);
+
+    serialize_user_row(&existing_row, row_location);
+    free(cursor);
     return EXECUTE_SUCCESS;
 }
 
