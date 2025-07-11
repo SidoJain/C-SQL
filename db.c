@@ -48,6 +48,8 @@
 #define LEAF_NODE_MAX_CELLS         (LEAF_NODE_SPACE_FOR_CELLS / LEAF_NODE_CELL_SIZE)
 #define LEAF_NODE_RIGHT_SPLIT_COUNT ((LEAF_NODE_MAX_CELLS + 1) / 2)
 #define LEAF_NODE_LEFT_SPLIT_COUNT  ((LEAF_NODE_MAX_CELLS + 1) - LEAF_NODE_RIGHT_SPLIT_COUNT)
+#define LEAF_NODE_MIN_CELLS         (LEAF_NODE_LEFT_SPLIT_COUNT - 1)
+#define INTERNAL_NODE_MIN_KEYS      (INTERNAL_NODE_MAX_KEYS / 2)
 
 #define INTERNAL_NODE_NUM_KEYS_SIZE         sizeof(uint32_t)
 #define INTERNAL_NODE_NUM_KEYS_OFFSET       COMMON_NODE_HEADER_SIZE
@@ -195,6 +197,13 @@ ExecuteResult execute_select(Statement* statement, DbTable* table);
 ExecuteResult execute_drop(Statement* statement, DbTable* table);
 void create_new_root(DbTable* table, uint32_t right_child_page_idx);
 
+void leaf_node_remove_cell(void* node, uint32_t cell_idx);
+uint32_t get_node_child_index(void* parent_node, uint32_t child_page_idx);
+void merge_nodes(DbTable* table, uint32_t parent_page_idx, uint32_t node_page_idx, uint32_t sibling_page_idx);
+void redistribute_cells(DbTable* table, uint32_t parent_page_idx, uint32_t node_page_idx, uint32_t sibling_page_idx);
+void adjust_tree_after_delete(DbTable* table, uint32_t page_idx);
+void handle_root_shrink(DbTable* table);
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         printf(ANSI_COLOR_RED "Must supply a database filename.\n" ANSI_COLOR_RESET);
@@ -203,6 +212,8 @@ int main(int argc, char* argv[]) {
 
     char* db_filename = argv[1];
     DbTable* db_table = db_open(db_filename);
+
+    printf(ANSI_COLOR_GREEN "Use .commands for help\n" ANSI_COLOR_RESET);
 
     InputBuffer* input_buffer = new_input_buffer();
     while (true) {
@@ -313,6 +324,7 @@ void initialize_leaf_node(void* node) {
     set_node_root(node, false);
     *leaf_node_num_cells(node) = 0;
     *leaf_node_next_leaf(node) = 0;
+    *node_parent(node) = 0;
 }
 
 void leaf_node_split_and_insert(TableCursor* cursor, uint32_t key, UserRow* value) {
@@ -421,6 +433,7 @@ void initialize_internal_node(void* node) {
     set_node_root(node, false);
     *internal_node_num_keys(node) = 0;
     *internal_node_right_child(node) = INVALID_PAGE_IDX;
+    *node_parent(node) = 0;
 }
 
 void update_internal_node_key(void* node, uint32_t old_key, uint32_t new_key) {
@@ -826,7 +839,7 @@ void indent(uint32_t level) {
 
 void print_tree(DbPager* db_pager, uint32_t page_idx, uint32_t indentation_level) {
     void* node = get_page(db_pager, page_idx);
-    uint32_t num_keys, child;
+    uint32_t num_keys, child_page_idx;
 
     switch (get_node_type(node)) {
         case (NODE_LEAF):
@@ -842,17 +855,18 @@ void print_tree(DbPager* db_pager, uint32_t page_idx, uint32_t indentation_level
             num_keys = *internal_node_num_keys(node);
             indent(indentation_level);
             printf("- internal (size %d)\n", num_keys);
-            if (num_keys > 0) {
-                for (uint32_t i = 0; i < num_keys; i++) {
-                    child = *internal_node_child(node, i);
-                    print_tree(db_pager, child, indentation_level + 1);
 
-                    indent(indentation_level + 1);
-                    printf("- key %d\n", *internal_node_key(node, i));
-                }
-                child = *internal_node_right_child(node);
-                print_tree(db_pager, child, indentation_level + 1);
+            for (uint32_t i = 0; i < num_keys; i++) {
+                child_page_idx = *internal_node_child(node, i);
+                print_tree(db_pager, child_page_idx, indentation_level + 1);
+
+                indent(indentation_level + 1);
+                printf("- key %d\n", *internal_node_key(node, i));
             }
+            
+            child_page_idx = *internal_node_right_child(node);
+            if (child_page_idx != INVALID_PAGE_IDX)
+                print_tree(db_pager, child_page_idx, indentation_level + 1);
             break;
     }
 }
@@ -1001,26 +1015,16 @@ ExecuteResult execute_drop(Statement* statement, DbTable* table) {
     uint32_t key_to_delete = statement->user_to_insert.id;
     TableCursor* cursor = table_find(table, key_to_delete);
     void* node = get_page(table->db_pager, cursor->page_idx);
-    uint32_t num_cells = *leaf_node_num_cells(node);
 
-    if (cursor->cell_idx >= num_cells) {
+    if (cursor->cell_idx >= *leaf_node_num_cells(node) || *leaf_node_key(node, cursor->cell_idx) != key_to_delete) {
         printf(ANSI_COLOR_RED "Error: Record with ID %u not found.\n" ANSI_COLOR_RESET, key_to_delete);
         free(cursor);
-
         return EXECUTE_SUCCESS;
     }
 
-    uint32_t key_at_index = *leaf_node_key(node, cursor->cell_idx);
-    if (key_at_index != key_to_delete) {
-        printf(ANSI_COLOR_RED "Error: Record with ID %u not found.\n" ANSI_COLOR_RESET, key_to_delete);
-        free(cursor);
-
-        return EXECUTE_SUCCESS;
-    }
-
-    for (uint32_t i = cursor->cell_idx + 1; i < num_cells; i++)
-        memcpy(leaf_node_cell(node, i - 1), leaf_node_cell(node, i), LEAF_NODE_CELL_SIZE);
-    (*leaf_node_num_cells(node))--;
+    uint32_t page_idx_to_adjust = cursor->page_idx;
+    leaf_node_remove_cell(node, cursor->cell_idx);
+    adjust_tree_after_delete(table, page_idx_to_adjust);
 
     free(cursor);
     return EXECUTE_SUCCESS;
@@ -1057,4 +1061,176 @@ void create_new_root(DbTable* table, uint32_t right_child_page_idx) {
     *internal_node_right_child(root) = right_child_page_idx;
     *node_parent(left_child) = table->root_page_idx;
     *node_parent(right_child) = table->root_page_idx;
+}
+
+void leaf_node_remove_cell(void* node, uint32_t cell_idx) {
+    uint32_t num_cells = *leaf_node_num_cells(node);
+    for (uint32_t i = cell_idx; i < num_cells - 1; i++)
+        memcpy(leaf_node_cell(node, i), leaf_node_cell(node, i + 1), LEAF_NODE_CELL_SIZE);
+    (*leaf_node_num_cells(node))--;
+}
+
+uint32_t get_node_child_index(void* parent_node, uint32_t child_page_idx) {
+    uint32_t num_keys = *internal_node_num_keys(parent_node);
+    for (uint32_t i = 0; i < num_keys; i++)
+        if (*internal_node_child(parent_node, i) == child_page_idx)
+            return i;
+
+    if (*internal_node_right_child(parent_node) == child_page_idx)
+        return num_keys;
+    printf(ANSI_COLOR_RED "Could not find child %d in parent.\n" ANSI_COLOR_RESET, child_page_idx);
+    exit(EXIT_FAILURE);
+}
+
+void merge_nodes(DbTable* table, uint32_t parent_page_idx, uint32_t node_page_idx, uint32_t sibling_page_idx) {
+    void* parent_node = get_page(table->db_pager, parent_page_idx);
+    void* node = get_page(table->db_pager, node_page_idx);
+    void* sibling_node = get_page(table->db_pager, sibling_page_idx);
+
+    // This function assumes node_page_idx is the left node and sibling_page_idx is the right.
+    // The logic in adjust_tree_after_delete ensures this is always the case.
+    uint32_t sibling_child_index_in_parent = get_node_child_index(parent_node, sibling_page_idx);
+
+    if (get_node_type(node) == NODE_LEAF) {
+        uint32_t node_num_cells = *leaf_node_num_cells(node);
+        uint32_t sibling_num_cells = *leaf_node_num_cells(sibling_node);
+
+        // Copy all cells from the right node (sibling) to the end of the left node.
+        memcpy(leaf_node_cell(node, node_num_cells), leaf_node_cell(sibling_node, 0), sibling_num_cells * LEAF_NODE_CELL_SIZE);
+        *leaf_node_num_cells(node) += sibling_num_cells;
+
+        // Update the next leaf pointer to skip over the now-empty sibling node.
+        *leaf_node_next_leaf(node) = *leaf_node_next_leaf(sibling_node);
+    } else { // Internal Node Merge
+        uint32_t node_num_keys = *internal_node_num_keys(node);
+        uint32_t sibling_num_keys = *internal_node_num_keys(sibling_node);
+
+        // Pull down the separating key from the parent.
+        uint32_t key_from_parent = *internal_node_key(parent_node, sibling_child_index_in_parent - 1);
+        *internal_node_key(node, node_num_keys) = key_from_parent;
+        
+        // Copy keys and child pointers from the sibling.
+        memcpy(internal_node_cell(node, node_num_keys + 1), internal_node_cell(sibling_node, 0), sibling_num_keys * INTERNAL_NODE_CELL_SIZE);
+        *internal_node_right_child(node) = *internal_node_right_child(sibling_node);
+        *internal_node_num_keys(node) += sibling_num_keys + 1;
+
+        // Update the parent pointer for all children that were moved from the sibling node.
+        uint32_t total_keys = *internal_node_num_keys(node);
+        for(uint32_t i = node_num_keys + 1; i < total_keys + 1; i++) {
+            uint32_t child_page_idx = *internal_node_child(node, i);
+            void* child = get_page(table->db_pager, child_page_idx);
+            *node_parent(child) = node_page_idx;
+        }
+    }
+
+    // Remove the key and child pointer from the parent node.
+    uint32_t num_parent_keys = *internal_node_num_keys(parent_node);
+    // The key to remove is at index (sibling_child_index_in_parent - 1).
+    // The child pointer to remove is part of the cell at that index, or the right_child pointer.
+    for (uint32_t i = sibling_child_index_in_parent - 1; i < num_parent_keys - 1; i++) {
+        // Shift cells (key and left-child-pointer) to the left
+        memcpy(internal_node_cell(parent_node, i), internal_node_cell(parent_node, i + 1), INTERNAL_NODE_CELL_SIZE);
+    }
+    // If the rightmost child was the one removed, we need to update the right child pointer.
+    // The loop above already shifted the former right_child into the last cell, so we can take it from there.
+    if (sibling_child_index_in_parent == num_parent_keys) {
+         *internal_node_right_child(parent_node) = *internal_node_child(parent_node, num_parent_keys - 1);
+    }
+    *internal_node_num_keys(parent_node) -= 1;
+    
+    // The max key of the merged node's parent may have changed. Update it.
+    uint32_t parent_of_parent_idx = *node_parent(parent_node);
+    if (parent_of_parent_idx != 0) { // 0 is an invalid parent page index
+        void* parent_of_parent = get_page(table->db_pager, parent_of_parent_idx);
+        uint32_t old_max = *internal_node_key(parent_of_parent, get_node_child_index(parent_of_parent, parent_page_idx));
+        uint32_t new_max = get_node_max_key(table->db_pager, parent_node);
+        update_internal_node_key(parent_of_parent, old_max, new_max);
+    }
+
+
+    // Recursively adjust the tree upwards if the parent is now underfull.
+    adjust_tree_after_delete(table, parent_page_idx);
+}
+
+void redistribute_cells(DbTable* table, uint32_t parent_page_idx, uint32_t node_page_idx, uint32_t sibling_page_idx) {
+    void* parent_node = get_page(table->db_pager, parent_page_idx);
+    void* node = get_page(table->db_pager, node_page_idx);
+    void* sibling_node = get_page(table->db_pager, sibling_page_idx);
+    uint32_t node_child_index = get_node_child_index(parent_node, node_page_idx);
+
+    if (node_child_index < get_node_child_index(parent_node, sibling_page_idx)) {
+        uint32_t num_cells_node = *leaf_node_num_cells(node);
+        memcpy(leaf_node_cell(node, num_cells_node), leaf_node_cell(sibling_node, 0), LEAF_NODE_CELL_SIZE);
+        (*leaf_node_num_cells(node))++;
+
+        uint32_t num_cells_sibling = *leaf_node_num_cells(sibling_node);
+        for (uint32_t i = 0; i < num_cells_sibling - 1; i++)
+            memcpy(leaf_node_cell(sibling_node, i), leaf_node_cell(sibling_node, i + 1), LEAF_NODE_CELL_SIZE);
+        (*leaf_node_num_cells(sibling_node))--;
+
+        *internal_node_key(parent_node, node_child_index) = *leaf_node_key(node, num_cells_node);
+    }
+    else {
+        for (uint32_t i = *leaf_node_num_cells(node); i > 0; i--)
+            memcpy(leaf_node_cell(node, i), leaf_node_cell(node, i - 1), LEAF_NODE_CELL_SIZE);
+
+        uint32_t num_cells_sibling = *leaf_node_num_cells(sibling_node);
+        memcpy(leaf_node_cell(node, 0), leaf_node_cell(sibling_node, num_cells_sibling - 1), LEAF_NODE_CELL_SIZE);
+        (*leaf_node_num_cells(node))++;
+        (*leaf_node_num_cells(sibling_node))--;
+
+        *internal_node_key(parent_node, node_child_index - 1) = *leaf_node_key(sibling_node, *leaf_node_num_cells(sibling_node) - 1);
+    }
+}
+
+void adjust_tree_after_delete(DbTable* table, uint32_t page_idx) {
+    void* node = get_page(table->db_pager, page_idx);
+    uint32_t num_cells = (get_node_type(node) == NODE_LEAF) ? *leaf_node_num_cells(node) : *internal_node_num_keys(node);
+    uint32_t min_cells = (get_node_type(node) == NODE_LEAF) ? LEAF_NODE_MIN_CELLS : INTERNAL_NODE_MIN_KEYS;
+
+    if (is_node_root(node)) {
+        handle_root_shrink(table);
+        return;
+    }
+    if (num_cells >= min_cells)
+        return;
+
+    uint32_t parent_page_idx = *node_parent(node);
+    void* parent_node = get_page(table->db_pager, parent_page_idx);
+    uint32_t child_index = get_node_child_index(parent_node, page_idx);
+
+    uint32_t sibling_page_idx;
+    if (child_index == *internal_node_num_keys(parent_node))
+        sibling_page_idx = *internal_node_child(parent_node, child_index - 1);
+    else
+        sibling_page_idx = *internal_node_child(parent_node, child_index + 1);
+
+    void* sibling_node = get_page(table->db_pager, sibling_page_idx);
+    uint32_t sibling_num_cells = (get_node_type(sibling_node) == NODE_LEAF) ? *leaf_node_num_cells(sibling_node) : *internal_node_num_keys(sibling_node);
+    
+    if (sibling_num_cells > min_cells)
+        redistribute_cells(table, parent_page_idx, page_idx, sibling_page_idx);
+    else {
+        if (child_index > get_node_child_index(parent_node, sibling_page_idx))
+            merge_nodes(table, parent_page_idx, sibling_page_idx, page_idx);
+        else
+            merge_nodes(table, parent_page_idx, page_idx, sibling_page_idx);
+    }
+}
+
+void handle_root_shrink(DbTable* table) {
+    uint32_t root_page_idx = table->root_page_idx;
+    void* root_node = get_page(table->db_pager, root_page_idx);
+
+    // If the root is an internal node with no keys, it means it has only one child.
+    // That child becomes the new root.
+    if (get_node_type(root_node) == NODE_INTERNAL && *internal_node_num_keys(root_node) == 0) {
+        // The single remaining child is in the first child pointer slot.
+        uint32_t new_root_page_idx = *internal_node_child(root_node, 0);
+        void* new_root_node = get_page(table->db_pager, new_root_page_idx);
+
+        table->root_page_idx = new_root_page_idx;
+        set_node_root(new_root_node, true);
+        *node_parent(new_root_node) = 0; // The new root has no parent.
+    }
 }

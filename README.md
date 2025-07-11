@@ -151,7 +151,6 @@ All logic resides in `main.c`. Functions are grouped by purpose:
 - ❌ No Concurrency – not safe for multi-threaded or multi-process access  
 - ❌ Fixed Schema – only supports `{id, username, email}`  
 - ❌ Limited Query Language – no `WHERE`, `JOIN`, or aggregation  
-- ❌ Simple Deletion – no B-Tree rebalancing after deletions  
 - ❌ No Secondary Indexes – queries on non-primary keys are inefficient
 
 ## License
