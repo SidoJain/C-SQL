@@ -10,7 +10,7 @@
 #define size_of_attribute(Struct, Attribute) (sizeof(((Struct*)0)->Attribute))
 
 #define USERNAME_MAX_LENGTH     32
-#define EMAIL_MAX_LENGTH         255
+#define EMAIL_MAX_LENGTH        255
 #define FILENAME_MAX_LENGTH     255
 
 #define ID_FIELD_SIZE           size_of_attribute(UserRow, id)
@@ -57,7 +57,7 @@
 #define INTERNAL_NODE_CHILD_SIZE            sizeof(uint32_t)
 #define INTERNAL_NODE_CELL_SIZE             (INTERNAL_NODE_CHILD_SIZE + INTERNAL_NODE_KEY_SIZE)
 #define INTERNAL_NODE_MAX_KEYS              ((PAGE_SIZE_BYTES - INTERNAL_NODE_HEADER_SIZE) / INTERNAL_NODE_CELL_SIZE)
-#define INTERNAL_NODE_MIN_KEYS      (INTERNAL_NODE_MAX_KEYS / 2)
+#define INTERNAL_NODE_MIN_KEYS              (INTERNAL_NODE_MAX_KEYS / 2)
 
 #define ANSI_COLOR_GREEN    "\x1b[32m"
 #define ANSI_COLOR_YELLOW   "\x1b[33m"

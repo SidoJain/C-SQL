@@ -4,3 +4,7 @@
 *.db
 *.exe
 *.o
+*.csv
+
+bin/
+db/
