@@ -268,7 +268,7 @@ void internal_node_insert(DbTable* table, uint32_t parent_page_idx, uint32_t chi
 
 void internal_node_split_and_insert(DbTable* table, uint32_t parent_page_idx, uint32_t child_page_idx) {
     uint32_t old_page_idx = parent_page_idx;
-    void* old_node = get_page(table->db_pager,parent_page_idx);
+    void* old_node = get_page(table->db_pager, parent_page_idx);
     uint32_t old_max_key = get_node_max_key(table->db_pager, old_node);
     void* child = get_page(table->db_pager, child_page_idx); 
     uint32_t child_max_key = get_node_max_key(table->db_pager, child);
@@ -279,8 +279,8 @@ void internal_node_split_and_insert(DbTable* table, uint32_t parent_page_idx, ui
     void* new_node;
     if (splitting_root) {
         create_new_root(table, new_page_idx);
-        parent = get_page(table->db_pager,table->root_page_idx);
-        old_page_idx = *internal_node_child(parent,0);
+        parent = get_page(table->db_pager, table->root_page_idx);
+        old_page_idx = *internal_node_child(parent, 0);
         old_node = get_page(table->db_pager, old_page_idx);
     }
     else {
@@ -348,7 +348,7 @@ void create_new_root(DbTable* table, uint32_t right_child_page_idx) {
     if (get_node_type(left_child) == NODE_INTERNAL) {
         void* child;
         for (uint32_t i = 0; i < *internal_node_num_keys(left_child); i++) {
-            child = get_page(table->db_pager, *internal_node_child(left_child,i));
+            child = get_page(table->db_pager, *internal_node_child(left_child, i));
             *node_parent(child) = left_child_page_idx;
         }
         child = get_page(table->db_pager, *internal_node_right_child(left_child));

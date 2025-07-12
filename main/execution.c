@@ -139,9 +139,9 @@ ExecuteResult execute_import(Statement* statement, DbTable* table) {
         strcpy(insert_statement.payload.user_to_insert.username, username);
         strcpy(insert_statement.payload.user_to_insert.email, email);
 
-        if (execute_insert(&insert_statement, table) == EXECUTE_SUCCESS) {
+        if (execute_insert(&insert_statement, table) == EXECUTE_SUCCESS)
             success_count++;
-        } else {
+        else {
             fprintf(stderr, ANSI_COLOR_YELLOW "Skipping line %d: Could not insert row with ID %d (likely a duplicate key).\n" ANSI_COLOR_RESET, line_num, id);
             fail_count++;
         }
