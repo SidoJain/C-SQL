@@ -38,8 +38,9 @@ void print_constants() {
 void print_commands() {
     printf("insert {num} {name} {email}\n");
     printf("select\n");
-    printf("drop {id}\n");
+    printf("select {id}\n");
     printf("update {id} set {param}={value}\n");
+    printf("drop {id}\n");
     printf("import '{file.csv}'\n");
     printf("export '{file.csv}'\n");
     printf(".btree\n");

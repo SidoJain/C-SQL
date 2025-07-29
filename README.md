@@ -58,6 +58,13 @@ make run
   select 1
   ```
 
+- `update {id} set {param}={value}`  
+  Updates the record with the given `id`.  
+  **Example:**  
+  ```bash
+  update 1 set email=text@example.com
+  ```
+
 - `drop {id}`  
   Deletes the record with the given `id`.  
   **Example:**  
